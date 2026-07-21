@@ -74,6 +74,13 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
 .base .bc .bv{font-family:var(--mono);font-size:20px;margin-top:6px;font-variant-numeric:tabular-nums}
 .base .bc .bn{font-size:10px;color:var(--dim);margin-top:3px}
 
+/* tendência ao longo do tempo */
+#trendSeg{margin:12px 0 12px}
+.trendVerdict{font-size:13px;font-weight:600;margin:2px 0 4px;line-height:1.4}
+.trendVerdict.ok{color:var(--green)} .trendVerdict.warn{color:var(--amber)} .trendVerdict.bad{color:var(--red)}
+#trendChart{margin:6px 0 4px}
+#trendChart svg{width:100%;height:auto;display:block}
+
 .log{list-style:none;padding:0;margin:0}
 .log li{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
 .log li:last-child{border-bottom:0}
@@ -138,6 +145,14 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
   <div class="sub">Mediana das suas medições em cada cenário — resistente a leituras isoladas fora da curva.</div>
 </div>
 
+<div class="card hide" id="trendCard">
+  <div class="k" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)">Tendência ao longo do tempo</div>
+  <div class="seg" id="trendSeg"></div>
+  <div class="trendVerdict" id="trendVerdict"></div>
+  <div id="trendChart"></div>
+  <div class="sub" id="trendSub"></div>
+</div>
+
 <h2>Registros</h2>
 <ul class="log" id="log"></ul>
 <div class="empty hide" id="logEmpty">Nenhum registro ainda. O app calcula a taxa sozinho toda vez que você abre — use normalmente por algumas horas e volte aqui.</div>
@@ -172,6 +187,7 @@ const store = {
 let db = store.read() || { snapshot:null, session:null, records:[] };
 if (!db.records) db.records = [];
 const save = () => store.write(db);
+let trendSc = null;   // cenário selecionado no gráfico de tendência
 
 /* ---------- utilidades ---------- */
 const $ = id => document.getElementById(id);
@@ -208,6 +224,104 @@ function classify(rate, sc){
   return { cls:"bad", txt:"Descarga alta para o cenário" };
 }
 const corDe = cls => cls === "ok" ? "var(--green)" : cls === "warn" ? "var(--amber)" : "var(--red)";
+const corHex = cls => cls === "ok" ? "#34d399" : cls === "warn" ? "#ffb020" : "#f43f5e";
+
+/* ---------- histórico diário (base da tendência de longo prazo) ----------
+   Registros brutos são podados (cap no log), mas a agregação diária sobrevive:
+   para cada dia e cenário guarda as taxas medidas, e a mediana do dia vira um
+   ponto na curva de tendência. É o que revela a bateria degradando ao longo de
+   semanas ou um app se comportando mal de um dia para o outro. */
+function dayKey(ts){
+  const d = new Date(ts);
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+function addDaily(rec){
+  if (!db.daily) db.daily = {};
+  const k = dayKey(rec.ts);
+  (db.daily[k] = db.daily[k] || {});
+  const arr = (db.daily[k][rec.cenario] = db.daily[k][rec.cenario] || []);
+  arr.push(+(+rec.rate).toFixed(2));
+  if (arr.length > 24) arr.shift();
+}
+function pruneDaily(){
+  if (!db.daily) return;
+  const keys = Object.keys(db.daily).sort();
+  while (keys.length > 60) delete db.daily[keys.shift()];
+}
+/* Reconstrói o histórico diário a partir dos registros já existentes (uma vez). */
+function backfillDaily(){
+  if (db.daily) return;
+  db.daily = {};
+  [...db.records].reverse().forEach(addDaily);   // do mais antigo ao mais novo
+  pruneDaily(); save();
+}
+/* Ponto único de criação de registro: mantém log + histórico diário em sincronia. */
+function pushRecord(rec){
+  db.records.unshift(rec);
+  db.records = db.records.slice(0,60);
+  addDaily(rec); pruneDaily();
+}
+
+/* Série cronológica {ts, med, n} das medianas diárias de um cenário. */
+function trendSeries(sc){
+  const out = [];
+  if (!db.daily) return out;
+  Object.keys(db.daily).sort().forEach(k => {
+    const arr = db.daily[k] && db.daily[k][sc];
+    if (arr && arr.length) out.push({ ts:new Date(k+"T12:00:00").getTime(), med:median(arr), n:arr.length });
+  });
+  return out;
+}
+/* Inclinação da taxa em %/h por dia (mínimos quadrados sobre as medianas diárias). */
+function trendSlope(series){
+  if (series.length < 3) return null;
+  const t0 = series[0].ts, pts = series.map(p => ({ x:(p.ts - t0)/(24*HOUR), y:p.med })), n = pts.length;
+  let sx=0, sy=0, sxx=0, sxy=0;
+  for (const p of pts){ sx+=p.x; sy+=p.y; sxx+=p.x*p.x; sxy+=p.x*p.y; }
+  const d = sxx - sx*sx/n;
+  if (d <= 1e-9) return null;
+  return (sxy - sx*sy/n) / d;
+}
+function trendVerdict(sc, series){
+  const slope = trendSlope(series);
+  if (slope == null){
+    const d = series.length;
+    return { txt: d + (d === 1 ? " dia registrado" : " dias registrados") + " · a tendência se forma com medições em mais dias", cls:"" };
+  }
+  const perWeek = slope * 7, base = Math.max(SCENARIOS[sc].ok, 0.5);
+  if (Math.abs(perWeek) < base * 0.08) return { txt:"Estável — sem sinal de degradação", cls:"ok" };
+  if (perWeek > 0) return { txt:"Subindo ~" + perWeek.toFixed(1) + " %/h por semana — vale investigar", cls: perWeek/base > 0.25 ? "bad" : "warn" };
+  return { txt:"Melhorando ~" + Math.abs(perWeek).toFixed(1) + " %/h por semana", cls:"ok" };
+}
+/* Gráfico SVG: mediana diária no tempo, com a linha de referência saudável. */
+function trendChart(sc, series){
+  const W=320, H=150, padL=32, padR=12, padT=12, padB=24;
+  const iw = W-padL-padR, ih = H-padT-padB, thr = SCENARIOS[sc].ok;
+  const ymax = Math.max(thr*1.4, ...series.map(p => p.med), 1) * 1.1;
+  const single = series.length < 2;
+  const x0 = single ? series[0].ts - 12*HOUR : series[0].ts;
+  const x1 = single ? series[0].ts + 12*HOUR : series[series.length-1].ts;
+  const nx = ts => padL + (x1 > x0 ? (ts-x0)/(x1-x0) : 0.5)*iw;
+  const ny = r => padT + ih - (Math.min(r, ymax)/ymax)*ih;
+  const fmt = ts => { const d = new Date(ts); return String(d.getDate()).padStart(2,"0") + "/" + String(d.getMonth()+1).padStart(2,"0"); };
+  const ty = ny(thr);
+  let el = "";
+  el += '<line x1="'+padL+'" y1="'+ny(0)+'" x2="'+(W-padR)+'" y2="'+ny(0)+'" stroke="#2a323c" stroke-width="1"/>';
+  el += '<line x1="'+padL+'" y1="'+ty+'" x2="'+(W-padR)+'" y2="'+ty+'" stroke="#34d399" stroke-width="1" stroke-dasharray="3 3" opacity=".5"/>';
+  el += '<text x="'+(W-padR)+'" y="'+(ty-4)+'" fill="#34d399" opacity=".7" font-size="9" text-anchor="end">saudável '+thr+'%/h</text>';
+  el += '<text x="'+(padL-6)+'" y="'+(ny(0)+3)+'" fill="#8b97a6" font-size="9" text-anchor="end">0</text>';
+  el += '<text x="'+(padL-6)+'" y="'+(padT+8)+'" fill="#8b97a6" font-size="9" text-anchor="end">'+ymax.toFixed(0)+'</text>';
+  if (!single){
+    const d = series.map((p,i) => (i ? "L" : "M") + nx(p.ts).toFixed(1) + " " + ny(p.med).toFixed(1)).join(" ");
+    el += '<path d="'+d+'" fill="none" stroke="#8b97a6" stroke-width="1.5" opacity=".55" stroke-linejoin="round"/>';
+  }
+  series.forEach(p => {
+    el += '<circle cx="'+nx(p.ts).toFixed(1)+'" cy="'+ny(p.med).toFixed(1)+'" r="3.5" fill="'+corHex(classify(p.med, sc).cls)+'"/>';
+  });
+  el += '<text x="'+padL+'" y="'+(H-6)+'" fill="#8b97a6" font-size="9" text-anchor="start">'+fmt(x0)+'</text>';
+  el += '<text x="'+(W-padR)+'" y="'+(H-6)+'" fill="#8b97a6" font-size="9" text-anchor="end">'+fmt(x1)+'</text>';
+  return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Tendência da taxa ao longo do tempo">'+el+'</svg>';
+}
 
 /* ---------- motor de leitura: regressão linear por mínimos quadrados ----------
    Recebe amostras [{ts, level}] e ajusta uma reta nível×tempo.
@@ -274,15 +388,17 @@ function sparkline(samples, color, w, h){
   if (!samples || samples.length < 2) return "";
   const xs = samples.map(s => s.t), ys = samples.map(s => s.l);
   const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  // piso de amplitude: uma queda de ~1% (ruído do arredondamento) deve parecer
+  // uma linha suave, não um penhasco esticado até a altura toda do gráfico.
+  const MINSPAN = 6;
+  if (y1 - y0 < MINSPAN){ const c = (y0 + y1)/2; y0 = c - MINSPAN/2; y1 = c + MINSPAN/2; }
   const nx = t => x1 > x0 ? (t - x0)/(x1 - x0)*(w - 2) + 1 : w/2;
-  const ny = l => y1 > y0 ? (h - 2) - ((l - y0)/(y1 - y0))*(h - 4) + 1 : h/2;
+  const ny = l => (h - 2) - ((l - y0)/(y1 - y0))*(h - 4) + 1;
   const d = samples.map((s,i) => (i ? "L" : "M") + nx(s.t).toFixed(1) + " " + ny(s.l).toFixed(1)).join(" ");
-  const area = d + " L" + nx(x1).toFixed(1) + " " + (h-1) + " L" + nx(x0).toFixed(1) + " " + (h-1) + " Z";
   return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">' +
-    '<path d="' + area + '" fill="' + color + '" opacity=".12"/>' +
     '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.6" ' +
-    'stroke-linejoin="round" stroke-linecap="round"/></svg>';
+    'stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>';
 }
 
 /* Compacta a série para guardar no registro (primeiro, último e pontos espaçados). */
@@ -350,11 +466,10 @@ function registerPassive(){
   const queda = s.level - lvl;
   const valido = !s.charging && !bat.charging && queda >= 2 && dt >= 15*60000 && dt <= 48*HOUR;
   if (valido){
-    db.records.unshift({
+    pushRecord({
       tipo:"passive", cenario:"passive", rate:+(queda/(dt/HOUR)).toFixed(2),
       de:s.level, ate:lvl, ms:dt, ts:now()
     });
-    db.records = db.records.slice(0,40);
   }
   snapshot();
 }
@@ -432,7 +547,25 @@ function render(){
     ? "Pode fechar o app e usar o celular normalmente. Volte aqui para encerrar."
     : "Deixe rodando 15 min ou mais. O app amostra a bateria continuamente e ajusta uma reta — quanto mais tempo, mais firme a leitura.";
   renderBase();
+  renderTrend();
   renderLog();
+}
+
+function renderTrend(){
+  const avail = ["idle","screen","heavy","passive"].filter(sc => trendSeries(sc).length > 0);
+  $("trendCard").classList.toggle("hide", avail.length === 0);
+  if (!avail.length) return;
+  if (!trendSc || !avail.includes(trendSc)) trendSc = avail.includes("idle") ? "idle" : avail[0];
+  $("trendSeg").innerHTML = avail.map(sc =>
+    '<button data-tsc="' + sc + '" aria-pressed="' + (sc === trendSc) + '">' + SCENARIOS[sc].nome + '</button>'
+  ).join("");
+  const series = trendSeries(trendSc);
+  const v = trendVerdict(trendSc, series);
+  $("trendVerdict").textContent = v.txt;
+  $("trendVerdict").className = "trendVerdict " + v.cls;
+  $("trendChart").innerHTML = trendChart(trendSc, series);
+  $("trendSub").textContent = "Mediana diária · " + series.length + (series.length === 1 ? " dia" : " dias") +
+    " · referência saudável: até " + SCENARIOS[trendSc].ok + "%/h";
 }
 
 function renderBase(){
@@ -485,6 +618,13 @@ $("seg").addEventListener("click", e => {
   [...$("seg").children].forEach(x => x.setAttribute("aria-pressed", x === b));
 });
 
+$("trendSeg").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  trendSc = b.dataset.tsc;
+  renderTrend();
+});
+
 let wl = null;
 async function lockScreen(){
   try { if ("wakeLock" in navigator) wl = await navigator.wakeLock.request("screen"); } catch(e){}
@@ -521,8 +661,7 @@ $("btnSession").addEventListener("click", () => {
         rec.n = reg.n;
         rec.samples = packSamples(run, 48);
       }
-      db.records.unshift(rec);
-      db.records = db.records.slice(0,40);
+      pushRecord(rec);
     }
     db.session = null;
     unlockScreen();
@@ -561,9 +700,12 @@ $("btnCopy").addEventListener("click", async () => {
 
 $("btnClear").addEventListener("click", () => {
   if (!confirm("Apagar todos os registros?")) return;
-  db = { snapshot:null, session:null, records:[] };
+  db = { snapshot:null, session:null, records:[], daily:{} };
+  trendSc = null;
   save(); unlockScreen(); render();
 });
+
+backfillDaily();
 
 if ("serviceWorker" in navigator){
   navigator.serviceWorker.register("sw.js");
