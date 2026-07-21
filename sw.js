@@ -1,5 +1,5 @@
 // IMPORTANTE: incrementar CACHE a cada atualizacao (bateria-v2, v3, ...)
-const CACHE = "bateria-v4";
+const CACHE = "bateria-v5";
 const CORE = ["./", "./index.html", "./manifest.webmanifest"];
 const EXTRA = ["./icon-192.png", "./icon-512.png"];
 

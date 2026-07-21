@@ -81,6 +81,20 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
 #trendChart{margin:6px 0 4px}
 #trendChart svg{width:100%;height:auto;display:block}
 
+/* diagnóstico */
+.diagHead{font-size:15px;font-weight:700;margin-top:8px;line-height:1.35}
+.diagHead.alert{color:var(--red)} .diagHead.warn{color:var(--amber)}
+.diagHead.ok{color:var(--green)} .diagHead.info{color:var(--dim)}
+.diag{list-style:none;padding:0;margin:14px 0 0}
+.diag li{display:flex;gap:11px;padding:12px 0;border-bottom:1px solid var(--line)}
+.diag li:last-child{border-bottom:0;padding-bottom:2px}
+.diag .dot{width:9px;height:9px;border-radius:99px;margin-top:5px;flex-shrink:0}
+.diag .dc{flex:1;min-width:0}
+.diag .dt{font-size:13px;font-weight:600;color:var(--txt)}
+.diag .de{font-size:12px;color:var(--dim);line-height:1.5;margin-top:3px}
+.diag .da{font-size:12px;line-height:1.5;margin-top:6px;color:var(--txt)}
+.diag .da b{color:var(--cyan);font-weight:600}
+
 .log{list-style:none;padding:0;margin:0}
 .log li{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
 .log li:last-child{border-bottom:0}
@@ -126,6 +140,12 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
     <div class="v" id="eta">—</div>
     <div class="bar"><i style="width:0;background:#2a323c"></i></div>
   </div>
+</div>
+
+<div class="card" id="diagCard">
+  <div class="k" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)">Diagnóstico</div>
+  <div class="diagHead" id="diagHead">Analisando…</div>
+  <ul class="diag" id="diag"></ul>
 </div>
 
 <div class="card">
@@ -546,6 +566,7 @@ function render(){
   $("sessionInfo").textContent = sess
     ? "Pode fechar o app e usar o celular normalmente. Volte aqui para encerrar."
     : "Deixe rodando 15 min ou mais. O app amostra a bateria continuamente e ajusta uma reta — quanto mais tempo, mais firme a leitura.";
+  renderDiag();
   renderBase();
   renderTrend();
   renderLog();
@@ -566,6 +587,118 @@ function renderTrend(){
   $("trendChart").innerHTML = trendChart(trendSc, series);
   $("trendSub").textContent = "Mediana diária · " + series.length + (series.length === 1 ? " dia" : " dias") +
     " · referência saudável: até " + SCENARIOS[trendSc].ok + "%/h";
+}
+
+/* ---------- diagnóstico: procura problemas nos padrões de descarga ----------
+   O navegador não expõe consumo por app, temperatura nem saúde da célula, então
+   o diagnóstico é inferencial: lê os padrões que o app já mede e deduz a causa
+   mais provável, sempre apontando para a ferramenta do Android que confirma. */
+function medRate(sc){
+  const t = db.records.filter(r => r.cenario === sc).map(r => r.rate);
+  return t.length ? { med: median(t), n: t.length } : null;
+}
+function diagnose(){
+  const out = [];
+  const idle = medRate("idle"), passive = medRate("passive");
+  const screen = medRate("screen"), heavy = medRate("heavy");
+  const nrec = db.records.length;
+
+  // 1. Consumo em repouso — o sinal mais forte de app em segundo plano.
+  //    Usa o pior entre "tela apagada" e "entre usos".
+  const repouso = [idle, passive].filter(Boolean).sort((a,b) => b.med - a.med)[0];
+  if (repouso){
+    const ehIdle = repouso === idle;
+    const nome = ehIdle ? "a tela apagada" : "o telefone entre usos";
+    const ok = ehIdle ? SCENARIOS.idle.ok : SCENARIOS.passive.ok;
+    const alto = ehIdle ? SCENARIOS.idle.alto : SCENARIOS.passive.alto;
+    if (repouso.med > alto){
+      out.push({ sev:"alert", titulo:"Algo consome bateria em segundo plano",
+        evidencia:"Com " + nome + ", sua descarga mediana é " + repouso.med.toFixed(1) + " %/h — bem acima do saudável (até " + ok + " %/h).",
+        acao:"Abra <b>Ajustes → Bateria → Uso da bateria</b> e veja qual app aparece rodando em segundo plano. Restrinja o que não precisa e desconfie de apps instalados ou atualizados há pouco." });
+    } else if (repouso.med > ok){
+      out.push({ sev:"warn", titulo:"Consumo em repouso um pouco alto",
+        evidencia:"Com " + nome + ", sua descarga mediana é " + repouso.med.toFixed(1) + " %/h (o saudável é até " + ok + " %/h).",
+        acao:"Costuma ser sincronização de contas, localização ou notificações frequentes. Confira <b>Ajustes → Bateria → Uso da bateria</b> e revise as permissões de segundo plano." });
+    } else {
+      out.push({ sev:"ok", titulo:"Consumo em repouso saudável",
+        evidencia:"Parado, sua descarga fica em " + repouso.med.toFixed(1) + " %/h — dentro do esperado.", acao:"" });
+    }
+  }
+
+  // 2. Tendência de repouso subindo ao longo dos dias.
+  let serie = trendSeries("idle"); if (serie.length < 3) serie = trendSeries("passive");
+  if (serie.length >= 3){
+    const slope = trendSlope(serie) || 0, perWeek = slope * 7;
+    if (perWeek > 0.5){
+      // salto = o último dia pulou bem acima do dia anterior, além do que a
+      // subida gradual (slope) explicaria. Rampa constante não conta como salto.
+      const ult = serie[serie.length-1].med, prev = serie[serie.length-2].med;
+      const jump = ult - prev;
+      const salto = jump > 0.5 && jump > 2.2 * Math.max(slope, 0.05);
+      out.push({ sev:"warn",
+        titulo: salto ? "Piora recente e repentina" : "Consumo subindo aos poucos",
+        evidencia:"O consumo em repouso subiu ~" + perWeek.toFixed(1) + " %/h por semana" + (salto ? ", com um salto nos últimos dias." : ", de forma gradual."),
+        acao: salto
+          ? "Salto repentino costuma ser um app novo ou uma atualização. Lembre o que instalou ou atualizou por volta de quando piorou e desinstale para testar."
+          : "Subida lenta e constante ao longo de meses pode ser desgaste natural da célula. Se o aparelho tiver, confira a <b>Saúde da bateria</b> nos ajustes." });
+    }
+  }
+
+  // 3. Gasta mais entre usos do que com a tela apagada — algo o acorda.
+  if (idle && passive && passive.med > idle.med * 1.8 && passive.med > SCENARIOS.idle.alto){
+    out.push({ sev:"warn", titulo:"O aparelho não descansa entre usos",
+      evidencia:"Entre usos gasta " + passive.med.toFixed(1) + " %/h, bem mais que os " + idle.med.toFixed(1) + " %/h com a tela apagada.",
+      acao:"Algo acorda o telefone: notificações push, sincronização de contas ou apps de localização. Reduza notificações e desative sync automático do que não precisa." });
+  }
+
+  // 4. Tela ligada consumindo muito.
+  if (screen && screen.med > SCENARIOS.screen.alto){
+    out.push({ sev:"warn", titulo:"Descarga alta com a tela ligada",
+      evidencia:"Com a tela ligada, sua mediana é " + screen.med.toFixed(1) + " %/h (o esperado é 8–12).",
+      acao:"Reduza o brilho, desligue a taxa de atualização alta (90/120 Hz) e feche sites ou apps pesados. Refaça o teste para comparar." });
+  }
+
+  // 5. Descarga irregular — baixa aderência da reta indica picos esporádicos.
+  const r2s = db.records.filter(r => r.tipo === "session" && r.r2 != null).map(r => r.r2);
+  if (r2s.length >= 3 && median(r2s) < 0.6){
+    out.push({ sev:"warn", titulo:"Descarga irregular",
+      evidencia:"Suas medições oscilam bastante em vez de cair de forma constante.",
+      acao:"Oscilação sugere picos de atividade em segundo plano de tempos em tempos — combine com o item de repouso acima para achar o culpado." });
+  }
+
+  // 6. Dados insuficientes.
+  if (nrec < 3){
+    out.push({ sev:"info", titulo:"Meça mais para um diagnóstico melhor",
+      evidencia:"Com poucas medições o diagnóstico ainda é preliminar.",
+      acao:"Faça alguns testes em cenários diferentes e volte ao app depois de horas de uso normal." });
+  }
+
+  const rank = { alert:0, warn:1, info:2, ok:3 };
+  out.sort((a,b) => rank[a.sev] - rank[b.sev]);
+  return out;
+}
+
+function renderDiag(){
+  if (!bat && !db.records.length){ $("diagCard").classList.add("hide"); return; }
+  $("diagCard").classList.remove("hide");
+  const items = diagnose();
+  const worst = items.length ? items[0].sev : "info";
+  const head = {
+    alert:{ t:"Possível problema encontrado", c:"alert" },
+    warn: { t:"Alguns pontos de atenção", c:"warn" },
+    ok:   { t:"Nenhum problema aparente", c:"ok" },
+    info: { t:"Coletando dados para o diagnóstico", c:"info" }
+  }[worst];
+  $("diagHead").className = "diagHead " + head.c;
+  $("diagHead").textContent = head.t;
+  const cor = { alert:"var(--red)", warn:"var(--amber)", ok:"var(--green)", info:"var(--dim)" };
+  $("diag").innerHTML = items.map(f =>
+    '<li><span class="dot" style="background:' + cor[f.sev] + '"></span><div class="dc">' +
+    '<div class="dt">' + f.titulo + '</div>' +
+    '<div class="de">' + f.evidencia + '</div>' +
+    (f.acao ? '<div class="da">' + f.acao + '</div>' : '') +
+    '</div></li>'
+  ).join("");
 }
 
 function renderBase(){
@@ -685,7 +818,12 @@ $("btnCopy").addEventListener("click", async () => {
     const t = db.records.filter(r => r.cenario === sc).map(r => r.rate);
     return t.length ? "  " + SCENARIOS[sc].nome + ": " + median(t).toFixed(1) + "%/h (mediana de " + t.length + ")" : null;
   }).filter(Boolean);
+  const semTag = s => s.replace(/<\/?b>/g, "");
+  const diag = diagnose().slice(0,4).map(f =>
+    "  [" + ({alert:"!!",warn:"!",ok:"ok",info:"i"}[f.sev]) + "] " + f.titulo + " — " + semTag(f.evidencia)
+  );
   const txt = "Monitor de bateria\nNível atual: " + Math.round((bat ? bat.level : 0)*100) + "%\n" +
+    (diag.length ? "\nDiagnóstico:\n" + diag.join("\n") + "\n" : "") +
     (bases.length ? "\nLinha de base:\n" + bases.join("\n") + "\n" : "") +
     "\nMedições recentes:\n" + (linhas.length ? linhas.join("\n") : "Sem medições.");
   try {
