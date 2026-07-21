@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#12151a">
+<title>Taxa — monitor de bateria</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+:root{
+  --bg:#12151a; --surface:#1b2027; --line:#2a323c;
+  --txt:#e8edf2; --dim:#8b97a6;
+  --amber:#ffb020; --cyan:#22d3ee; --red:#f43f5e; --green:#34d399;
+  --mono:ui-monospace,"SF Mono","Roboto Mono","DejaVu Sans Mono",monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--txt);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{padding:16px 16px calc(28px + env(safe-area-inset-bottom));max-width:520px;margin:0 auto}
+h1{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+  font-weight:600;margin:4px 0 14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
+
+.gauge{text-align:center;padding:22px 16px 18px}
+.gauge .label{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+.rate{font-family:var(--mono);font-size:62px;line-height:1;font-weight:600;
+  margin:10px 0 2px;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.rate small{font-size:20px;color:var(--dim);font-weight:400;letter-spacing:0}
+.verdict{font-size:14px;font-weight:600;margin-top:8px}
+.verdict.ok{color:var(--green)} .verdict.warn{color:var(--amber)} .verdict.bad{color:var(--red)}
+.sub{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.5}
+
+.row{display:flex;gap:10px}
+.row>*{flex:1}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px}
+.stat .k{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.stat .v{font-family:var(--mono);font-size:22px;margin-top:4px;font-variant-numeric:tabular-nums}
+
+.bar{height:6px;background:#0d1014;border-radius:99px;overflow:hidden;margin-top:12px}
+.bar>i{display:block;height:100%;background:var(--amber);transition:width .4s}
+.bar.charging>i{background:var(--cyan)}
+
+button{font:inherit;color:inherit;background:#232a33;border:1px solid var(--line);
+  border-radius:11px;padding:13px 14px;width:100%;font-weight:600;cursor:pointer}
+button:active{transform:scale(.985)}
+button.primary{background:var(--amber);color:#12151a;border-color:var(--amber)}
+button.danger{background:transparent;color:var(--red);border-color:#4a2530}
+button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.seg{display:flex;gap:6px;margin:12px 0 14px}
+.seg button{padding:10px 6px;font-size:12px;font-weight:500;color:var(--dim)}
+.seg button[aria-pressed="true"]{background:#2d3641;color:var(--txt);border-color:#3d4956}
+
+h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+  font-weight:600;margin:22px 0 10px}
+.log{list-style:none;padding:0;margin:0}
+.log li{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+.log li:last-child{border-bottom:0}
+.log .lr{font-family:var(--mono);font-size:17px;min-width:74px;font-variant-numeric:tabular-nums}
+.log .ld{flex:1;font-size:12px;color:var(--dim);line-height:1.45}
+.log .ld b{color:var(--txt);font-weight:600;display:block;font-size:13px}
+.track{width:56px;height:5px;background:#0d1014;border-radius:99px;overflow:hidden;flex-shrink:0}
+.track>i{display:block;height:100%}
+.empty{font-size:13px;color:var(--dim);line-height:1.6;padding:4px 0}
+.live{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--red);
+  margin-right:7px;vertical-align:middle;animation:p 1.6s infinite}
+@keyframes p{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.note{font-size:11px;color:var(--dim);line-height:1.6;margin-top:18px}
+.hide{display:none}
+</style>
+</head>
+<body>
+
+<h1>Taxa · monitor de bateria</h1>
+
+<div class="card gauge">
+  <div class="label" id="gaugeLabel">Descarga agora</div>
+  <div class="rate" id="rate">—<small>%/h</small></div>
+  <div class="verdict" id="verdict"></div>
+  <div class="sub" id="gaugeSub">Lendo bateria…</div>
+</div>
+
+<div class="row" style="margin-bottom:12px">
+  <div class="stat">
+    <div class="k">Nível</div>
+    <div class="v" id="level">—</div>
+    <div class="bar" id="levelBar"><i style="width:0"></i></div>
+  </div>
+  <div class="stat">
+    <div class="k">Autonomia</div>
+    <div class="v" id="eta">—</div>
+    <div class="bar"><i style="width:0;background:#2a323c"></i></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="k" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)">Teste controlado</div>
+  <div class="seg" id="seg">
+    <button data-sc="idle" aria-pressed="true">Tela apagada</button>
+    <button data-sc="screen" aria-pressed="false">Tela ligada</button>
+    <button data-sc="heavy" aria-pressed="false">Uso pesado</button>
+  </div>
+  <button class="primary" id="btnSession">Iniciar teste</button>
+  <div class="sub" id="sessionInfo">Deixe rodando 15 min ou mais. Quanto mais tempo, mais precisa a leitura.</div>
+</div>
+
+<h2>Registros</h2>
+<ul class="log" id="log"></ul>
+<div class="empty hide" id="logEmpty">Nenhum registro ainda. O app calcula a taxa sozinho toda vez que você abre — use normalmente por algumas horas e volte aqui.</div>
+
+<div style="margin-top:16px" class="row">
+  <button id="btnCopy">Copiar resumo</button>
+  <button class="danger" id="btnClear">Apagar tudo</button>
+</div>
+
+<p class="note">
+Referência de descarga saudável: <b>tela apagada</b> abaixo de 1%/h, <b>tela ligada</b> 8–12%/h, <b>uso pesado</b> 15–25%/h.
+Acima disso costuma indicar app rodando em segundo plano ou perda de capacidade da célula.
+O navegador não expõe saúde nem consumo por app — para isso, veja Ajustes → Bateria do Android.
+</p>
+
+<script>
+"use strict";
+
+/* ---------- armazenamento (com fallback em memória) ---------- */
+const KEY = "taxa-bateria-v1";
+const mem = {};
+const store = {
+  read(){
+    try{ const r = localStorage.getItem(KEY); return r ? JSON.parse(r) : null; }
+    catch(e){ return mem[KEY] || null; }
+  },
+  write(v){
+    try{ localStorage.setItem(KEY, JSON.stringify(v)); }
+    catch(e){ mem[KEY] = v; }
+  }
+};
+let db = store.read() || { snapshot:null, session:null, records:[] };
+const save = () => store.write(db);
+
+/* ---------- utilidades ---------- */
+const $ = id => document.getElementById(id);
+const now = () => Date.now();
+const HOUR = 3600000;
+
+function dur(ms){
+  const m = Math.round(ms/60000);
+  if (m < 60) return m + " min";
+  const h = Math.floor(m/60), r = m % 60;
+  return r ? h + "h" + String(r).padStart(2,"0") : h + "h";
+}
+function etaText(pct, rate){
+  if (!rate || rate <= 0) return "—";
+  return dur((pct / rate) * HOUR);
+}
+const SCENARIOS = {
+  idle:   { nome:"Tela apagada", ok:1,  alto:2.5 },
+  screen: { nome:"Tela ligada",  ok:12, alto:18  },
+  heavy:  { nome:"Uso pesado",   ok:25, alto:32  },
+  passive:{ nome:"Entre usos",   ok:2,  alto:4   }
+};
+function classify(rate, sc){
+  const s = SCENARIOS[sc] || SCENARIOS.passive;
+  if (rate <= s.ok)   return { cls:"ok",   txt:"Dentro do normal" };
+  if (rate <= s.alto) return { cls:"warn", txt:"Um pouco acima do esperado" };
+  return { cls:"bad", txt:"Descarga alta para o cenário" };
+}
+
+/* ---------- estado da bateria ---------- */
+let bat = null, cenario = "idle";
+
+async function init(){
+  if (!navigator.getBattery){
+    $("gaugeSub").textContent = "Este navegador não expõe dados de bateria. Abra pelo Chrome do Android.";
+    $("rate").innerHTML = "n/d";
+    return;
+  }
+  bat = await navigator.getBattery();
+  ["levelchange","chargingchange","dischargingtimechange"].forEach(ev =>
+    bat.addEventListener(ev, onChange)
+  );
+  registerPassive();
+  render();
+  setInterval(render, 20000);
+  setInterval(snapshot, 60000);
+}
+
+function onChange(){ snapshot(); render(); }
+
+function snapshot(){
+  if (!bat) return;
+  db.snapshot = { level: Math.round(bat.level*100), ts: now(), charging: bat.charging };
+  save();
+}
+
+/* Calcula a taxa do período em que o app esteve fechado, comparando com o último snapshot. */
+function registerPassive(){
+  const s = db.snapshot;
+  if (!s || !bat) return;
+  const lvl = Math.round(bat.level*100), dt = now() - s.ts;
+  const queda = s.level - lvl;
+  const valido = !s.charging && !bat.charging && queda >= 2 && dt >= 15*60000 && dt <= 48*HOUR;
+  if (valido){
+    db.records.unshift({
+      tipo:"passive", cenario:"passive", rate:+(queda/(dt/HOUR)).toFixed(2),
+      de:s.level, ate:lvl, ms:dt, ts:now()
+    });
+    db.records = db.records.slice(0,40);
+  }
+  snapshot();
+}
+
+/* ---------- render ---------- */
+function render(){
+  if (!bat) return;
+  const pct = Math.round(bat.level*100);
+  $("level").textContent = pct + "%";
+  const lb = $("levelBar");
+  lb.classList.toggle("charging", bat.charging);
+  lb.firstElementChild.style.width = pct + "%";
+
+  const sess = db.session;
+
+  if (bat.charging && !sess){
+    $("gaugeLabel").textContent = "Carregando";
+    $("rate").innerHTML = pct + '<small>%</small>';
+    $("verdict").textContent = "";
+    $("verdict").className = "verdict";
+    $("gaugeSub").textContent = bat.chargingTime && isFinite(bat.chargingTime)
+      ? "Cheia em aproximadamente " + dur(bat.chargingTime*1000) + "."
+      : "Desconecte o carregador para medir a descarga.";
+    $("eta").textContent = "—";
+  } else if (sess){
+    const dt = now() - sess.ts, queda = sess.level - pct;
+    const rate = dt > 60000 ? queda/(dt/HOUR) : null;
+    $("gaugeLabel").innerHTML = '<span class="live"></span>Teste · ' + SCENARIOS[sess.cenario].nome;
+    if (rate === null || queda < 1){
+      $("rate").innerHTML = "…<small>%/h</small>";
+      $("verdict").textContent = "";
+      $("verdict").className = "verdict";
+      $("gaugeSub").textContent = "Rodando há " + dur(dt) + ". Aguardando cair ao menos 1%.";
+    } else {
+      const v = classify(rate, sess.cenario);
+      $("rate").innerHTML = rate.toFixed(1) + '<small>%/h</small>';
+      $("verdict").textContent = v.txt;
+      $("verdict").className = "verdict " + v.cls;
+      $("gaugeSub").textContent = dur(dt) + " de teste · caiu " + queda + "% (de " + sess.level + "% para " + pct + "%)";
+      $("eta").textContent = etaText(pct, rate);
+    }
+  } else {
+    const ult = db.records[0];
+    $("gaugeLabel").textContent = ult ? "Última medição" : "Descarga";
+    if (ult){
+      const v = classify(ult.rate, ult.cenario);
+      $("rate").innerHTML = ult.rate.toFixed(1) + '<small>%/h</small>';
+      $("verdict").textContent = v.txt;
+      $("verdict").className = "verdict " + v.cls;
+      $("gaugeSub").textContent = SCENARIOS[ult.cenario].nome + " · " + dur(ult.ms) + " medidos";
+      $("eta").textContent = etaText(pct, ult.rate);
+    } else {
+      $("rate").innerHTML = "—<small>%/h</small>";
+      $("verdict").textContent = "";
+      $("verdict").className = "verdict";
+      $("gaugeSub").textContent = "Inicie um teste ou volte ao app depois de algumas horas de uso.";
+      $("eta").textContent = "—";
+    }
+  }
+
+  $("btnSession").textContent = sess ? "Encerrar teste" : "Iniciar teste";
+  $("btnSession").className = sess ? "" : "primary";
+  $("sessionInfo").textContent = sess
+    ? "Pode fechar o app e usar o celular normalmente. Volte aqui para encerrar."
+    : "Deixe rodando 15 min ou mais. Quanto mais tempo, mais precisa a leitura.";
+  renderLog();
+}
+
+function renderLog(){
+  const ul = $("log");
+  ul.innerHTML = "";
+  $("logEmpty").classList.toggle("hide", db.records.length > 0);
+  const max = Math.max(...db.records.map(r => r.rate), 1);
+  db.records.forEach(r => {
+    const v = classify(r.rate, r.cenario);
+    const cor = v.cls === "ok" ? "var(--green)" : v.cls === "warn" ? "var(--amber)" : "var(--red)";
+    const li = document.createElement("li");
+    li.innerHTML =
+      '<span class="lr" style="color:' + cor + '">' + r.rate.toFixed(1) + '<span style="font-size:11px;color:var(--dim)">%/h</span></span>' +
+      '<span class="ld"><b>' + SCENARIOS[r.cenario].nome + '</b>' +
+      r.de + '% → ' + r.ate + '% em ' + dur(r.ms) +
+      ' · ' + new Date(r.ts).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) +
+      '</span>' +
+      '<span class="track"><i style="width:' + Math.round(r.rate/max*100) + '%;background:' + cor + '"></i></span>';
+    ul.appendChild(li);
+  });
+}
+
+/* ---------- ações ---------- */
+$("seg").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b || db.session) return;
+  cenario = b.dataset.sc;
+  [...$("seg").children].forEach(x => x.setAttribute("aria-pressed", x === b));
+});
+
+let wl = null;
+async function lockScreen(){
+  try { if ("wakeLock" in navigator) wl = await navigator.wakeLock.request("screen"); } catch(e){}
+}
+function unlockScreen(){ try { wl && wl.release(); } catch(e){} wl = null; }
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible"){
+    if (db.session && db.session.cenario === "screen") lockScreen();
+    render();
+  }
+});
+
+$("btnSession").addEventListener("click", () => {
+  if (!bat) return;
+  if (db.session){
+    const s = db.session, pct = Math.round(bat.level*100);
+    const dt = now() - s.ts, queda = s.level - pct;
+    if (queda >= 1 && dt >= 3*60000){
+      db.records.unshift({
+        tipo:"session", cenario:s.cenario, rate:+(queda/(dt/HOUR)).toFixed(2),
+        de:s.level, ate:pct, ms:dt, ts:now()
+      });
+      db.records = db.records.slice(0,40);
+    }
+    db.session = null;
+    unlockScreen();
+  } else {
+    db.session = { cenario, level: Math.round(bat.level*100), ts: now() };
+    if (cenario === "screen") lockScreen();
+  }
+  save(); render();
+});
+
+$("btnCopy").addEventListener("click", async () => {
+  const linhas = db.records.slice(0,10).map(r =>
+    "• " + SCENARIOS[r.cenario].nome + ": " + r.rate.toFixed(1) + "%/h (" +
+    r.de + "→" + r.ate + "% em " + dur(r.ms) + ")"
+  );
+  const txt = "Monitor de bateria\nNível atual: " + Math.round((bat ? bat.level : 0)*100) + "%\n\n" +
+    (linhas.length ? linhas.join("\n") : "Sem medições.");
+  try {
+    await navigator.clipboard.writeText(txt);
+    $("btnCopy").textContent = "Copiado";
+    setTimeout(() => $("btnCopy").textContent = "Copiar resumo", 1600);
+  } catch(e){
+    $("btnCopy").textContent = "Não foi possível copiar";
+    setTimeout(() => $("btnCopy").textContent = "Copiar resumo", 1600);
+  }
+});
+
+$("btnClear").addEventListener("click", () => {
+  if (!confirm("Apagar todos os registros?")) return;
+  db = { snapshot:null, session:null, records:[] };
+  save(); unlockScreen(); render();
+});
+
+if ("serviceWorker" in navigator){
+  navigator.serviceWorker.register("sw.js");
+}
+init();
+</script>
+</body>
+</html>
