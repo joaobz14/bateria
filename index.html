@@ -388,15 +388,17 @@ function sparkline(samples, color, w, h){
   if (!samples || samples.length < 2) return "";
   const xs = samples.map(s => s.t), ys = samples.map(s => s.l);
   const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  // piso de amplitude: uma queda de ~1% (ruído do arredondamento) deve parecer
+  // uma linha suave, não um penhasco esticado até a altura toda do gráfico.
+  const MINSPAN = 6;
+  if (y1 - y0 < MINSPAN){ const c = (y0 + y1)/2; y0 = c - MINSPAN/2; y1 = c + MINSPAN/2; }
   const nx = t => x1 > x0 ? (t - x0)/(x1 - x0)*(w - 2) + 1 : w/2;
-  const ny = l => y1 > y0 ? (h - 2) - ((l - y0)/(y1 - y0))*(h - 4) + 1 : h/2;
+  const ny = l => (h - 2) - ((l - y0)/(y1 - y0))*(h - 4) + 1;
   const d = samples.map((s,i) => (i ? "L" : "M") + nx(s.t).toFixed(1) + " " + ny(s.l).toFixed(1)).join(" ");
-  const area = d + " L" + nx(x1).toFixed(1) + " " + (h-1) + " L" + nx(x0).toFixed(1) + " " + (h-1) + " Z";
   return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">' +
-    '<path d="' + area + '" fill="' + color + '" opacity=".12"/>' +
     '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.6" ' +
-    'stroke-linejoin="round" stroke-linecap="round"/></svg>';
+    'stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>';
 }
 
 /* Compacta a série para guardar no registro (primeiro, último e pontos espaçados). */
