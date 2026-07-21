@@ -31,6 +31,17 @@ h1{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
 .verdict.ok{color:var(--green)} .verdict.warn{color:var(--amber)} .verdict.bad{color:var(--red)}
 .sub{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.5}
 
+/* confiança / margem de erro */
+.conf{font-size:12px;margin-top:8px;display:none}
+.conf.show{display:block}
+.conf .dots{display:inline-flex;gap:3px;vertical-align:middle;margin-right:7px}
+.conf .dots i{width:6px;height:6px;border-radius:99px;background:var(--line);display:inline-block}
+.conf .dots i.on{background:currentColor}
+.conf.c1{color:var(--dim)} .conf.c2{color:var(--amber)} .conf.c3{color:var(--green)}
+.conf .pm{font-family:var(--mono);color:var(--dim)}
+.gspark{margin-top:14px;display:flex;justify-content:center;min-height:0}
+.gspark svg{width:100%;max-width:280px;height:46px}
+
 .row{display:flex;gap:10px}
 .row>*{flex:1}
 .stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px}
@@ -53,12 +64,26 @@ button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
 
 h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
   font-weight:600;margin:22px 0 10px}
+
+/* linha de base por cenário */
+.base{display:flex;gap:8px}
+.base .bc{flex:1;text-align:center;background:#161b21;border:1px solid var(--line);
+  border-radius:10px;padding:10px 6px}
+.base .bc .bk{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+  line-height:1.3;min-height:24px;display:flex;align-items:center;justify-content:center}
+.base .bc .bv{font-family:var(--mono);font-size:20px;margin-top:6px;font-variant-numeric:tabular-nums}
+.base .bc .bn{font-size:10px;color:var(--dim);margin-top:3px}
+
 .log{list-style:none;padding:0;margin:0}
 .log li{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
 .log li:last-child{border-bottom:0}
 .log .lr{font-family:var(--mono);font-size:17px;min-width:74px;font-variant-numeric:tabular-nums}
 .log .ld{flex:1;font-size:12px;color:var(--dim);line-height:1.45}
 .log .ld b{color:var(--txt);font-weight:600;display:block;font-size:13px}
+.log .ld .tag{display:inline-block;font-size:10px;color:var(--dim);border:1px solid var(--line);
+  border-radius:5px;padding:0 4px;margin-left:5px;vertical-align:1px}
+.log .rspark{width:56px;flex-shrink:0}
+.log .rspark svg{width:56px;height:22px;display:block}
 .track{width:56px;height:5px;background:#0d1014;border-radius:99px;overflow:hidden;flex-shrink:0}
 .track>i{display:block;height:100%}
 .empty{font-size:13px;color:var(--dim);line-height:1.6;padding:4px 0}
@@ -77,8 +102,10 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
 <div class="card gauge">
   <div class="label" id="gaugeLabel">Descarga agora</div>
   <div class="rate" id="rate">—<small>%/h</small></div>
+  <div class="conf" id="conf"></div>
   <div class="verdict" id="verdict"></div>
   <div class="sub" id="gaugeSub">Lendo bateria…</div>
+  <div class="gspark" id="gspark"></div>
 </div>
 
 <div class="row" style="margin-bottom:12px">
@@ -102,7 +129,13 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
     <button data-sc="heavy" aria-pressed="false">Uso pesado</button>
   </div>
   <button class="primary" id="btnSession">Iniciar teste</button>
-  <div class="sub" id="sessionInfo">Deixe rodando 15 min ou mais. Quanto mais tempo, mais precisa a leitura.</div>
+  <div class="sub" id="sessionInfo">Deixe rodando 15 min ou mais. O app amostra a bateria continuamente e ajusta uma reta — quanto mais tempo, mais firme a leitura.</div>
+</div>
+
+<div class="card hide" id="baseCard">
+  <div class="k" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);margin-bottom:10px">Linha de base do seu aparelho</div>
+  <div class="base" id="base"></div>
+  <div class="sub">Mediana das suas medições em cada cenário — resistente a leituras isoladas fora da curva.</div>
 </div>
 
 <h2>Registros</h2>
@@ -137,12 +170,14 @@ const store = {
   }
 };
 let db = store.read() || { snapshot:null, session:null, records:[] };
+if (!db.records) db.records = [];
 const save = () => store.write(db);
 
 /* ---------- utilidades ---------- */
 const $ = id => document.getElementById(id);
 const now = () => Date.now();
 const HOUR = 3600000;
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 
 function dur(ms){
   const m = Math.round(ms/60000);
@@ -154,6 +189,12 @@ function etaText(pct, rate){
   if (!rate || rate <= 0) return "—";
   return dur((pct / rate) * HOUR);
 }
+function median(arr){
+  if (!arr.length) return null;
+  const s = [...arr].sort((a,b) => a - b), m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
+}
+
 const SCENARIOS = {
   idle:   { nome:"Tela apagada", ok:1,  alto:2.5 },
   screen: { nome:"Tela ligada",  ok:12, alto:18  },
@@ -165,6 +206,94 @@ function classify(rate, sc){
   if (rate <= s.ok)   return { cls:"ok",   txt:"Dentro do normal" };
   if (rate <= s.alto) return { cls:"warn", txt:"Um pouco acima do esperado" };
   return { cls:"bad", txt:"Descarga alta para o cenário" };
+}
+const corDe = cls => cls === "ok" ? "var(--green)" : cls === "warn" ? "var(--amber)" : "var(--red)";
+
+/* ---------- motor de leitura: regressão linear por mínimos quadrados ----------
+   Recebe amostras [{ts, level}] e ajusta uma reta nível×tempo.
+   O arredondamento grosseiro do nível (degraus de vários %) vira ruído que a
+   reta cancela — muito mais estável que comparar só o primeiro e o último ponto.
+   Devolve taxa (%/h, positiva na descarga), R² (aderência da reta) e a
+   margem de erro ~95% da taxa. */
+function regress(samples){
+  if (!samples || samples.length < 2) return null;
+  const t0 = samples[0].ts;
+  const pts = samples.map(s => ({ h:(s.ts - t0)/HOUR, y:s.level }));
+  const n = pts.length;
+  let sx=0, sy=0, sxx=0, sxy=0, syy=0;
+  for (const p of pts){ sx+=p.h; sy+=p.y; sxx+=p.h*p.h; sxy+=p.h*p.y; syy+=p.y*p.y; }
+  const sxxC = sxx - sx*sx/n;               // soma dos quadrados de x centrada
+  if (sxxC <= 1e-9) return null;            // sem intervalo de tempo útil
+  const slope = (sxy - sx*sy/n) / sxxC;
+  const intercept = (sy - slope*sx) / n;
+  const ssTot = syy - sy*sy/n;
+  let ssRes = 0;
+  for (const p of pts){ const e = p.y - (intercept + slope*p.h); ssRes += e*e; }
+  const r2 = ssTot > 1e-9 ? clamp(1 - ssRes/ssTot, 0, 1) : (ssRes < 1e-6 ? 1 : 0);
+  let margin = 0;
+  const dof = n - 2;
+  if (dof > 0){
+    const seSlope = Math.sqrt((ssRes/dof) / sxxC);
+    margin = 1.96 * seSlope;                // ~95% de confiança
+  }
+  return {
+    rate: Math.max(0, -slope),              // descarga = inclinação negativa
+    r2, margin,
+    n, spanH: pts[n-1].h - pts[0].h
+  };
+}
+
+/* Só o trecho final sem carregador — descarta tudo até a última amostra carregando. */
+function cleanRun(samples){
+  let start = 0;
+  for (let i = 0; i < samples.length; i++) if (samples[i].charging) start = i + 1;
+  return samples.slice(start);
+}
+
+function confidence(reg){
+  if (!reg) return { level:0, txt:"", cls:"c1" };
+  if (reg.n < 3 || reg.spanH < 0.08) return { level:1, txt:"Coletando dados", cls:"c1" };
+  if (reg.r2 >= 0.9 && reg.spanH >= 0.25) return { level:3, txt:"Leitura firme", cls:"c3" };
+  if (reg.r2 >= 0.6) return { level:2, txt:"Leitura razoável", cls:"c2" };
+  return { level:1, txt:"Descarga instável", cls:"c1" };
+}
+
+function setConf(reg){
+  const el = $("conf");
+  if (!reg || confidence(reg).level === 0){ el.className = "conf"; el.innerHTML = ""; return; }
+  const c = confidence(reg);
+  const dots = [1,2,3].map(i => '<i class="' + (i <= c.level ? "on" : "") + '"></i>').join("");
+  const pm = reg.margin && isFinite(reg.margin) && reg.margin < 90
+    ? '<span class="pm">± ' + reg.margin.toFixed(1) + '</span>  ' : "";
+  el.className = "conf show " + c.cls;
+  el.innerHTML = '<span class="dots">' + dots + '</span>' + pm + c.txt;
+}
+
+/* ---------- mini-gráfico (sparkline) da série de nível ---------- */
+function sparkline(samples, color, w, h){
+  if (!samples || samples.length < 2) return "";
+  const xs = samples.map(s => s.t), ys = samples.map(s => s.l);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const nx = t => x1 > x0 ? (t - x0)/(x1 - x0)*(w - 2) + 1 : w/2;
+  const ny = l => y1 > y0 ? (h - 2) - ((l - y0)/(y1 - y0))*(h - 4) + 1 : h/2;
+  const d = samples.map((s,i) => (i ? "L" : "M") + nx(s.t).toFixed(1) + " " + ny(s.l).toFixed(1)).join(" ");
+  const area = d + " L" + nx(x1).toFixed(1) + " " + (h-1) + " L" + nx(x0).toFixed(1) + " " + (h-1) + " Z";
+  return '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">' +
+    '<path d="' + area + '" fill="' + color + '" opacity=".12"/>' +
+    '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.6" ' +
+    'stroke-linejoin="round" stroke-linecap="round"/></svg>';
+}
+
+/* Compacta a série para guardar no registro (primeiro, último e pontos espaçados). */
+function packSamples(samples, cap){
+  cap = cap || 48;
+  const t0 = samples[0].ts;
+  const arr = samples.map(s => ({ t:s.ts - t0, l:s.level }));
+  if (arr.length <= cap) return arr;
+  const out = [], step = (arr.length - 1) / (cap - 1);
+  for (let i = 0; i < cap; i++) out.push(arr[Math.round(i*step)]);
+  return out;
 }
 
 /* ---------- estado da bateria ---------- */
@@ -183,10 +312,10 @@ async function init(){
   registerPassive();
   render();
   setInterval(render, 20000);
-  setInterval(snapshot, 60000);
+  setInterval(tick, 60000);
 }
 
-function onChange(){ snapshot(); render(); }
+function onChange(){ sampleSession(); snapshot(); render(); }
 
 function snapshot(){
   if (!bat) return;
@@ -194,7 +323,26 @@ function snapshot(){
   save();
 }
 
-/* Calcula a taxa do período em que o app esteve fechado, comparando com o último snapshot. */
+/* A cada minuto: coleta uma amostra da sessão ativa e atualiza o snapshot. */
+function tick(){ sampleSession(); snapshot(); }
+
+/* Acrescenta uma amostra à sessão em andamento (base da regressão). */
+function sampleSession(){
+  const s = db.session;
+  if (!s || !bat) return;
+  if (!s.samples) s.samples = [];
+  const p = { ts: now(), level: Math.round(bat.level*100), charging: bat.charging };
+  const last = s.samples[s.samples.length - 1];
+  // evita duplicar amostras no mesmo instante
+  if (last && p.ts - last.ts < 5000 && last.level === p.level && last.charging === p.charging) return;
+  s.samples.push(p);
+  if (s.samples.length > 300){                 // decima para não crescer sem limite
+    s.samples = s.samples.filter((_, i) => i % 2 === 0 || i === s.samples.length - 1);
+  }
+  save();
+}
+
+/* Taxa do período com o app fechado, comparando com o último snapshot. */
 function registerPassive(){
   const s = db.snapshot;
   if (!s || !bat) return;
@@ -221,32 +369,41 @@ function render(){
   lb.firstElementChild.style.width = pct + "%";
 
   const sess = db.session;
+  const clearSpark = () => { $("gspark").innerHTML = ""; };
 
   if (bat.charging && !sess){
     $("gaugeLabel").textContent = "Carregando";
     $("rate").innerHTML = pct + '<small>%</small>';
-    $("verdict").textContent = "";
-    $("verdict").className = "verdict";
+    $("verdict").textContent = ""; $("verdict").className = "verdict";
+    setConf(null); clearSpark();
     $("gaugeSub").textContent = bat.chargingTime && isFinite(bat.chargingTime)
       ? "Cheia em aproximadamente " + dur(bat.chargingTime*1000) + "."
       : "Desconecte o carregador para medir a descarga.";
     $("eta").textContent = "—";
   } else if (sess){
-    const dt = now() - sess.ts, queda = sess.level - pct;
-    const rate = dt > 60000 ? queda/(dt/HOUR) : null;
+    // amostra viva (sem persistir) para a leitura acompanhar em tempo real
+    const live = (sess.samples || []).concat([{ ts:now(), level:pct, charging:bat.charging }]);
+    const run = cleanRun(live);
+    const reg = regress(run);
+    const contaminado = live.length > run.length;
+    const dt = now() - sess.ts;
     $("gaugeLabel").innerHTML = '<span class="live"></span>Teste · ' + SCENARIOS[sess.cenario].nome;
-    if (rate === null || queda < 1){
+
+    const c = confidence(reg);
+    if (!reg || c.level <= 1 && reg.spanH < 0.08){
       $("rate").innerHTML = "…<small>%/h</small>";
-      $("verdict").textContent = "";
-      $("verdict").className = "verdict";
-      $("gaugeSub").textContent = "Rodando há " + dur(dt) + ". Aguardando cair ao menos 1%.";
+      $("verdict").textContent = ""; $("verdict").className = "verdict";
+      setConf(null); clearSpark();
+      $("gaugeSub").textContent = "Rodando há " + dur(dt) + ". Coletando amostras…";
     } else {
-      const v = classify(rate, sess.cenario);
-      $("rate").innerHTML = rate.toFixed(1) + '<small>%/h</small>';
-      $("verdict").textContent = v.txt;
-      $("verdict").className = "verdict " + v.cls;
-      $("gaugeSub").textContent = dur(dt) + " de teste · caiu " + queda + "% (de " + sess.level + "% para " + pct + "%)";
-      $("eta").textContent = etaText(pct, rate);
+      const v = classify(reg.rate, sess.cenario);
+      $("rate").innerHTML = reg.rate.toFixed(1) + '<small>%/h</small>';
+      setConf(reg);
+      $("verdict").textContent = v.txt; $("verdict").className = "verdict " + v.cls;
+      $("gaugeSub").textContent = dur(dt) + " · " + reg.n + " amostras · caiu de " + sess.level + "% para " + pct + "%"
+        + (contaminado ? " · trecho no carregador ignorado" : "");
+      $("eta").textContent = etaText(pct, reg.rate);
+      $("gspark").innerHTML = sparkline(packSamples(run, 60), corDe(v.cls), 280, 46);
     }
   } else {
     const ult = db.records[0];
@@ -254,14 +411,16 @@ function render(){
     if (ult){
       const v = classify(ult.rate, ult.cenario);
       $("rate").innerHTML = ult.rate.toFixed(1) + '<small>%/h</small>';
-      $("verdict").textContent = v.txt;
-      $("verdict").className = "verdict " + v.cls;
+      $("verdict").textContent = v.txt; $("verdict").className = "verdict " + v.cls;
+      if (ult.r2 != null) setConf({ rate:ult.rate, r2:ult.r2, margin:ult.margin, n:ult.n, spanH:ult.ms/HOUR });
+      else setConf(null);
       $("gaugeSub").textContent = SCENARIOS[ult.cenario].nome + " · " + dur(ult.ms) + " medidos";
       $("eta").textContent = etaText(pct, ult.rate);
+      $("gspark").innerHTML = ult.samples ? sparkline(ult.samples, corDe(v.cls), 280, 46) : "";
     } else {
       $("rate").innerHTML = "—<small>%/h</small>";
-      $("verdict").textContent = "";
-      $("verdict").className = "verdict";
+      $("verdict").textContent = ""; $("verdict").className = "verdict";
+      setConf(null); clearSpark();
       $("gaugeSub").textContent = "Inicie um teste ou volte ao app depois de algumas horas de uso.";
       $("eta").textContent = "—";
     }
@@ -271,26 +430,49 @@ function render(){
   $("btnSession").className = sess ? "" : "primary";
   $("sessionInfo").textContent = sess
     ? "Pode fechar o app e usar o celular normalmente. Volte aqui para encerrar."
-    : "Deixe rodando 15 min ou mais. Quanto mais tempo, mais precisa a leitura.";
+    : "Deixe rodando 15 min ou mais. O app amostra a bateria continuamente e ajusta uma reta — quanto mais tempo, mais firme a leitura.";
+  renderBase();
   renderLog();
+}
+
+function renderBase(){
+  const wrap = $("base");
+  const ordem = ["idle","screen","heavy","passive"];
+  const cards = [];
+  ordem.forEach(sc => {
+    const taxas = db.records.filter(r => r.cenario === sc).map(r => r.rate);
+    if (!taxas.length) return;
+    const med = median(taxas), v = classify(med, sc);
+    cards.push(
+      '<div class="bc"><div class="bk">' + SCENARIOS[sc].nome + '</div>' +
+      '<div class="bv" style="color:' + corDe(v.cls) + '">' + med.toFixed(1) +
+      '<span style="font-size:11px;color:var(--dim)">%/h</span></div>' +
+      '<div class="bn">' + taxas.length + (taxas.length > 1 ? " medições" : " medição") + '</div></div>'
+    );
+  });
+  $("baseCard").classList.toggle("hide", cards.length === 0);
+  wrap.innerHTML = cards.join("");
 }
 
 function renderLog(){
   const ul = $("log");
   ul.innerHTML = "";
   $("logEmpty").classList.toggle("hide", db.records.length > 0);
-  const max = Math.max(...db.records.map(r => r.rate), 1);
   db.records.forEach(r => {
     const v = classify(r.rate, r.cenario);
-    const cor = v.cls === "ok" ? "var(--green)" : v.cls === "warn" ? "var(--amber)" : "var(--red)";
+    const cor = corDe(v.cls);
     const li = document.createElement("li");
+    const pm = r.margin && isFinite(r.margin) && r.margin < 90
+      ? ' <span class="tag">± ' + r.margin.toFixed(1) + '</span>' : "";
+    const graf = r.samples
+      ? '<span class="rspark">' + sparkline(r.samples, cor, 56, 22) + '</span>'
+      : '<span class="track"><i style="width:' + Math.round(clamp(r.rate/32,0,1)*100) + '%;background:' + cor + '"></i></span>';
     li.innerHTML =
       '<span class="lr" style="color:' + cor + '">' + r.rate.toFixed(1) + '<span style="font-size:11px;color:var(--dim)">%/h</span></span>' +
-      '<span class="ld"><b>' + SCENARIOS[r.cenario].nome + '</b>' +
+      '<span class="ld"><b>' + SCENARIOS[r.cenario].nome + pm + '</b>' +
       r.de + '% → ' + r.ate + '% em ' + dur(r.ms) +
       ' · ' + new Date(r.ts).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) +
-      '</span>' +
-      '<span class="track"><i style="width:' + Math.round(r.rate/max*100) + '%;background:' + cor + '"></i></span>';
+      '</span>' + graf;
     ul.appendChild(li);
   });
 }
@@ -311,6 +493,7 @@ function unlockScreen(){ try { wl && wl.release(); } catch(e){} wl = null; }
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible"){
     if (db.session && db.session.cenario === "screen") lockScreen();
+    sampleSession();
     render();
   }
 });
@@ -320,29 +503,52 @@ $("btnSession").addEventListener("click", () => {
   if (db.session){
     const s = db.session, pct = Math.round(bat.level*100);
     const dt = now() - s.ts, queda = s.level - pct;
-    if (queda >= 1 && dt >= 3*60000){
-      db.records.unshift({
-        tipo:"session", cenario:s.cenario, rate:+(queda/(dt/HOUR)).toFixed(2),
+    const full = (s.samples || []).concat([{ ts:now(), level:pct, charging:bat.charging }]);
+    const run = cleanRun(full);
+    const reg = regress(run);
+    // usa a taxa da regressão quando ela é confiável; senão cai no cálculo de 2 pontos
+    let rate = null;
+    if (reg && confidence(reg).level >= 2) rate = reg.rate;
+    else if (queda >= 1 && dt >= 3*60000) rate = queda/(dt/HOUR);
+    if (rate != null){
+      const rec = {
+        tipo:"session", cenario:s.cenario, rate:+rate.toFixed(2),
         de:s.level, ate:pct, ms:dt, ts:now()
-      });
+      };
+      if (reg){
+        rec.r2 = +reg.r2.toFixed(3);
+        rec.margin = +reg.margin.toFixed(2);
+        rec.n = reg.n;
+        rec.samples = packSamples(run, 48);
+      }
+      db.records.unshift(rec);
       db.records = db.records.slice(0,40);
     }
     db.session = null;
     unlockScreen();
   } else {
-    db.session = { cenario, level: Math.round(bat.level*100), ts: now() };
+    db.session = {
+      cenario, level: Math.round(bat.level*100), ts: now(),
+      samples: [{ ts: now(), level: Math.round(bat.level*100), charging: bat.charging }]
+    };
     if (cenario === "screen") lockScreen();
   }
   save(); render();
 });
 
 $("btnCopy").addEventListener("click", async () => {
-  const linhas = db.records.slice(0,10).map(r =>
-    "• " + SCENARIOS[r.cenario].nome + ": " + r.rate.toFixed(1) + "%/h (" +
-    r.de + "→" + r.ate + "% em " + dur(r.ms) + ")"
-  );
-  const txt = "Monitor de bateria\nNível atual: " + Math.round((bat ? bat.level : 0)*100) + "%\n\n" +
-    (linhas.length ? linhas.join("\n") : "Sem medições.");
+  const linhas = db.records.slice(0,10).map(r => {
+    const pm = r.margin && isFinite(r.margin) && r.margin < 90 ? " ±" + r.margin.toFixed(1) : "";
+    return "• " + SCENARIOS[r.cenario].nome + ": " + r.rate.toFixed(1) + pm + "%/h (" +
+      r.de + "→" + r.ate + "% em " + dur(r.ms) + ")";
+  });
+  const bases = ["idle","screen","heavy","passive"].map(sc => {
+    const t = db.records.filter(r => r.cenario === sc).map(r => r.rate);
+    return t.length ? "  " + SCENARIOS[sc].nome + ": " + median(t).toFixed(1) + "%/h (mediana de " + t.length + ")" : null;
+  }).filter(Boolean);
+  const txt = "Monitor de bateria\nNível atual: " + Math.round((bat ? bat.level : 0)*100) + "%\n" +
+    (bases.length ? "\nLinha de base:\n" + bases.join("\n") + "\n" : "") +
+    "\nMedições recentes:\n" + (linhas.length ? linhas.join("\n") : "Sem medições.");
   try {
     await navigator.clipboard.writeText(txt);
     $("btnCopy").textContent = "Copiado";
