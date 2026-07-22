@@ -212,6 +212,7 @@ Acima disso costuma indicar app rodando em segundo plano ou perda de capacidade 
 O navegador não expõe saúde nem consumo por app — para isso, veja Ajustes → Bateria do Android.
 </p>
 
+<script src="native-bridge.js"></script>
 <script>
 "use strict";
 
@@ -992,6 +993,30 @@ if ("serviceWorker" in navigator){
   navigator.serviceWorker.register("sw.js");
 }
 init();
+
+/* ---------- camada nativa (só ativa dentro do APK) ----------
+   No navegador NativeBattery.available é false e nada disso roda — o app segue
+   idêntico. No app nativo, mostra corrente real + temperatura + estado real da
+   tela no medidor, como prova de que o motor Kotlin está entregando dados. */
+if (window.NativeBattery && NativeBattery.available){
+  const el = document.createElement("div");
+  el.className = "sub";
+  el.style.marginTop = "10px";
+  const gauge = document.querySelector(".gauge");
+  if (gauge) gauge.appendChild(el);
+  async function pollNative(){
+    const d = await NativeBattery.read();
+    if (!d){ el.textContent = ""; return; }
+    const p = [];
+    if (d.currentMa != null) p.push("🔌 " + Math.abs(d.currentMa).toFixed(0) + " mA");
+    if (d.tempC != null) p.push("🌡 " + d.tempC.toFixed(1) + " °C");
+    if (d.health) p.push("saúde: " + d.health);
+    if (d.screenOn != null) p.push("tela " + (d.screenOn ? "ligada" : "apagada"));
+    el.innerHTML = p.length ? "Nativo · " + p.join(" · ") : "";
+  }
+  pollNative();
+  setInterval(pollNative, 4000);
+}
 </script>
 </body>
 </html>

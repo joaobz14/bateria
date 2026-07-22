@@ -1,0 +1,8 @@
+# dependências e saídas geradas localmente
+node_modules/
+www/
+android/
+
+# artefatos de sistema
+.DS_Store
+*.log
