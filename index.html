@@ -95,6 +95,23 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
 .diag .da{font-size:12px;line-height:1.5;margin-top:6px;color:var(--txt)}
 .diag .da b{color:var(--cyan);font-weight:600}
 
+/* uso real: quebra tela ligada / espera */
+.rbrk{margin:2px 0 14px}
+.rtot{display:flex;justify-content:space-between;align-items:baseline;padding:8px 0 12px;border-bottom:1px solid var(--line)}
+.rtot .rl{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em}
+.rtot .rr{font-family:var(--mono);font-size:26px;font-variant-numeric:tabular-nums}
+.rtot .rr small{font-size:13px;color:var(--dim)}
+.rrow{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.rrow:last-child{border-bottom:0}
+.rrow .ri{font-size:16px;width:20px;text-align:center;flex-shrink:0}
+.rrow .rc{flex:1}
+.rrow .rn{font-size:13px;font-weight:600}
+.rrow .rt{font-size:11px;color:var(--dim);margin-top:2px}
+.rrow .rv{font-family:var(--mono);font-size:17px;font-variant-numeric:tabular-nums;text-align:right}
+.rrow .rv small{font-size:11px;color:var(--dim)}
+.rrow.on .rn{color:var(--amber)} .rrow.off .rn{color:var(--cyan)}
+.rlive{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--red);margin-right:7px;vertical-align:middle;animation:p 1.6s infinite}
+
 .log{list-style:none;padding:0;margin:0}
 .log li{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
 .log li:last-child{border-bottom:0}
@@ -157,6 +174,13 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
   </div>
   <button class="primary" id="btnSession">Iniciar teste</button>
   <div class="sub" id="sessionInfo">Deixe rodando 15 min ou mais. O app amostra a bateria continuamente e ajusta uma reta — quanto mais tempo, mais firme a leitura.</div>
+</div>
+
+<div class="card" id="realCard">
+  <div class="k" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)">Uso real · tela ligada + desligada</div>
+  <div id="realBreak"></div>
+  <button class="primary" id="btnReal">Iniciar monitoramento</button>
+  <div class="sub" id="realInfo">Use o celular como sempre — pode bloquear e voltar a usar. O app separa <b>tela ligada</b> de <b>espera</b> pelo padrão de descarga, sem você escolher cenário.</div>
 </div>
 
 <div class="card hide" id="baseCard">
@@ -235,7 +259,8 @@ const SCENARIOS = {
   idle:   { nome:"Tela apagada", ok:1,  alto:2.5 },
   screen: { nome:"Tela ligada",  ok:12, alto:18  },
   heavy:  { nome:"Uso pesado",   ok:25, alto:32  },
-  passive:{ nome:"Entre usos",   ok:2,  alto:4   }
+  passive:{ nome:"Entre usos",   ok:2,  alto:4   },
+  real:   { nome:"Uso real",     ok:8,  alto:15  }
 };
 function classify(rate, sc){
   const s = SCENARIOS[sc] || SCENARIOS.passive;
@@ -451,7 +476,7 @@ async function init(){
   setInterval(tick, 60000);
 }
 
-function onChange(){ sampleSession(); snapshot(); render(); }
+function onChange(){ sampleSession(); sampleReal(); snapshot(); render(); }
 
 function snapshot(){
   if (!bat) return;
@@ -460,7 +485,7 @@ function snapshot(){
 }
 
 /* A cada minuto: coleta uma amostra da sessão ativa e atualiza o snapshot. */
-function tick(){ sampleSession(); snapshot(); }
+function tick(){ sampleSession(); sampleReal(); snapshot(); }
 
 /* Acrescenta uma amostra à sessão em andamento (base da regressão). */
 function sampleSession(){
@@ -566,6 +591,7 @@ function render(){
   $("sessionInfo").textContent = sess
     ? "Pode fechar o app e usar o celular normalmente. Volte aqui para encerrar."
     : "Deixe rodando 15 min ou mais. O app amostra a bateria continuamente e ajusta uma reta — quanto mais tempo, mais firme a leitura.";
+  renderReal();
   renderDiag();
   renderBase();
   renderTrend();
@@ -701,6 +727,81 @@ function renderDiag(){
   ).join("");
 }
 
+/* ---------- uso real: mede tela ligada + desligada numa sessão só ----------
+   O navegador não enxerga o estado da tela do aparelho, então o app infere pelo
+   padrão de descarga: a cada intervalo (entre bloquear e voltar), descarga rápida
+   = tela estava ligada; descarga lenta = tela desligada / em espera. */
+const REAL_TH = 4;   // %/h: acima disso, um trecho oculto era quase certamente tela ligada
+function realSample(){
+  return { ts: now(), level: Math.round(bat.level*100), vis: document.visibilityState === "visible", charging: bat.charging };
+}
+function sampleReal(){
+  if (!db.real || !bat) return;
+  const p = realSample();
+  const last = db.real.samples[db.real.samples.length - 1];
+  if (last && p.ts - last.ts < 3000 && last.level === p.level && last.vis === p.vis && last.charging === p.charging) return;
+  db.real.samples.push(p);
+  if (db.real.samples.length > 500) db.real.samples = db.real.samples.filter((_, i) => i % 2 === 0 || i === db.real.samples.length - 1);
+  save();
+}
+/* Separa os segmentos em tela ligada (foreground ou descarga rápida) e em espera. */
+function analyzeReal(samples){
+  let onMs=0, onDrop=0, offMs=0, offDrop=0, chg=false;
+  for (let i = 0; i < samples.length - 1; i++){
+    const a = samples[i], b = samples[i+1];
+    const ms = b.ts - a.ts, drop = a.level - b.level;
+    if (ms <= 0) continue;
+    if (a.charging || b.charging){ chg = true; continue; }   // ignora trechos carregando
+    const rate = drop / (ms/HOUR);
+    if (a.vis || rate > REAL_TH){ onMs += ms; onDrop += drop; }
+    else { offMs += ms; offDrop += drop; }
+  }
+  const mk = (ms, drop) => ms > 0 ? { ms, rate: Math.max(0, drop/(ms/HOUR)) } : null;
+  return { on: mk(onMs, onDrop), off: mk(offMs, offDrop), overall: mk(onMs+offMs, onDrop+offDrop), chg };
+}
+
+function renderReal(){
+  const r = db.real;
+  $("btnReal").textContent = r ? "Encerrar monitoramento" : "Iniciar monitoramento";
+  $("btnReal").className = r ? "" : "primary";
+  const box = $("realBreak");
+
+  let a = null, dt = 0, running = !!r;
+  if (r){
+    a = analyzeReal(r.samples.concat([realSample()]));
+    dt = now() - r.ts;
+  } else {
+    const ult = db.records.find(x => x.tipo === "real");
+    if (ult){ a = { on: ult.on, off: ult.off, overall: { ms: ult.ms, rate: ult.rate } }; dt = ult.ms; }
+  }
+
+  if (!a || !a.overall){
+    box.innerHTML = "";
+    if (running) $("realInfo").innerHTML = "Rodando… use o celular normalmente e bloqueie quando quiser. Aguardando a bateria cair.";
+    return;
+  }
+
+  const linha = (cls, ico, nome, seg, hint) => {
+    if (!seg || seg.ms < 30000) return "";
+    return '<div class="rrow ' + cls + '"><span class="ri">' + ico + '</span>' +
+      '<span class="rc"><span class="rn">' + nome + '</span><span class="rt">' + dur(seg.ms) + ' · ' + hint + '</span></span>' +
+      '<span class="rv">' + seg.rate.toFixed(1) + '<small> %/h</small></span></div>';
+  };
+  box.innerHTML =
+    '<div class="rbrk">' +
+      '<div class="rtot"><span class="rl">' + (running ? '<span class="rlive"></span>' : '') + (running ? 'Ao vivo · ' : '') + dur(dt) + '</span>' +
+        '<span class="rr">' + a.overall.rate.toFixed(1) + '<small> %/h médio</small></span></div>' +
+      linha("on", "☀", "Tela ligada", a.on, "uso ativo") +
+      linha("off", "🌙", "Tela desligada / espera", a.off, "bloqueado ou parado") +
+    '</div>';
+
+  if (running){
+    $("realInfo").innerHTML = "Rodando. Pode bloquear e voltar quantas vezes quiser — cada volta refina a separação. Encerre quando terminar.";
+  } else {
+    $("realInfo").innerHTML = "Use o celular como sempre — pode bloquear e voltar a usar. O app separa <b>tela ligada</b> de <b>espera</b> pelo padrão de descarga, sem você escolher cenário.";
+  }
+}
+
 function renderBase(){
   const wrap = $("base");
   const ordem = ["idle","screen","heavy","passive"];
@@ -728,6 +829,19 @@ function renderLog(){
     const v = classify(r.rate, r.cenario);
     const cor = corDe(v.cls);
     const li = document.createElement("li");
+    const quando = new Date(r.ts).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
+    if (r.tipo === "real"){
+      // registro de uso real: mostra a quebra tela ligada / espera no lugar do gráfico
+      const seg = (ico, s) => s && s.ms >= 30000 ? ico + " " + s.rate.toFixed(1) : null;
+      const partes = [seg("☀", r.on), seg("🌙", r.off)].filter(Boolean).join("  ");
+      li.innerHTML =
+        '<span class="lr" style="color:var(--cyan)">' + r.rate.toFixed(1) + '<span style="font-size:11px;color:var(--dim)">%/h</span></span>' +
+        '<span class="ld"><b>Uso real</b>' +
+        (partes ? partes + ' %/h · ' : '') + r.de + '% → ' + r.ate + '% em ' + dur(r.ms) +
+        ' · ' + quando + '</span>';
+      ul.appendChild(li);
+      return;
+    }
     const pm = r.margin && isFinite(r.margin) && r.margin < 90
       ? ' <span class="tag">± ' + r.margin.toFixed(1) + '</span>' : "";
     const graf = r.samples
@@ -737,7 +851,7 @@ function renderLog(){
       '<span class="lr" style="color:' + cor + '">' + r.rate.toFixed(1) + '<span style="font-size:11px;color:var(--dim)">%/h</span></span>' +
       '<span class="ld"><b>' + SCENARIOS[r.cenario].nome + pm + '</b>' +
       r.de + '% → ' + r.ate + '% em ' + dur(r.ms) +
-      ' · ' + new Date(r.ts).toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) +
+      ' · ' + quando +
       '</span>' + graf;
     ul.appendChild(li);
   });
@@ -764,6 +878,9 @@ async function lockScreen(){
 }
 function unlockScreen(){ try { wl && wl.release(); } catch(e){} wl = null; }
 document.addEventListener("visibilitychange", () => {
+  // registra o ponto na transição — essencial para fechar o trecho de tela ligada
+  // ao bloquear e abrir o trecho de espera. Roda antes de a aba ser suspensa.
+  sampleReal();
   if (document.visibilityState === "visible"){
     if (db.session && db.session.cenario === "screen") lockScreen();
     sampleSession();
@@ -808,6 +925,32 @@ $("btnSession").addEventListener("click", () => {
   save(); render();
 });
 
+$("btnReal").addEventListener("click", () => {
+  if (!bat) return;
+  if (db.real){
+    const a = analyzeReal(db.real.samples.concat([realSample()]));
+    const dt = now() - db.real.ts;
+    const de = db.real.samples[0].level, ate = Math.round(bat.level*100);
+    if (a.overall && dt >= 5*60000 && (de - ate) >= 1){
+      pushRecord({
+        tipo:"real", cenario:"real", rate:+a.overall.rate.toFixed(2),
+        de, ate, ms:dt, ts:now(),
+        on:  a.on  ? { ms:a.on.ms,  rate:+a.on.rate.toFixed(2)  } : null,
+        off: a.off ? { ms:a.off.ms, rate:+a.off.rate.toFixed(2) } : null
+      });
+      // a parte "em espera" é descarga real de fundo — alimenta o diagnóstico
+      if (a.off && a.off.ms >= 15*60000){
+        pushRecord({ tipo:"passive", cenario:"passive", rate:+a.off.rate.toFixed(2),
+          de, ate, ms:a.off.ms, ts:now() });
+      }
+    }
+    db.real = null;
+  } else {
+    db.real = { ts: now(), samples: [realSample()] };
+  }
+  save(); render();
+});
+
 $("btnCopy").addEventListener("click", async () => {
   const linhas = db.records.slice(0,10).map(r => {
     const pm = r.margin && isFinite(r.margin) && r.margin < 90 ? " ±" + r.margin.toFixed(1) : "";
@@ -838,7 +981,7 @@ $("btnCopy").addEventListener("click", async () => {
 
 $("btnClear").addEventListener("click", () => {
   if (!confirm("Apagar todos os registros?")) return;
-  db = { snapshot:null, session:null, records:[], daily:{} };
+  db = { snapshot:null, session:null, real:null, records:[], daily:{} };
   trendSc = null;
   save(); unlockScreen(); render();
 });
