@@ -1,6 +1,6 @@
 // IMPORTANTE: incrementar CACHE a cada atualizacao (bateria-v2, v3, ...)
-const CACHE = "bateria-v6";
-const CORE = ["./", "./index.html", "./manifest.webmanifest"];
+const CACHE = "bateria-v7";
+const CORE = ["./", "./index.html", "./manifest.webmanifest", "./native-bridge.js"];
 const EXTRA = ["./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {

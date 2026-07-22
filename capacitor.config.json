@@ -1,0 +1,8 @@
+{
+  "appId": "com.joaobz14.taxa",
+  "appName": "Taxa",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "taxa-bateria",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Taxa — monitor de bateria (app web + camada nativa via Capacitor)",
+  "scripts": {
+    "copy:web": "node scripts/copy-web.js",
+    "sync": "npm run copy:web && npx cap sync android",
+    "add:android": "npm run copy:web && npx cap add android",
+    "open:android": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.0",
+    "@capacitor/core": "^6.1.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.0"
+  }
+}
